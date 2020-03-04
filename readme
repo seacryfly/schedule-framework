@@ -1,1 +1,76 @@
 实时任务调度系统，支持全局机器任务分配和断点。
+
+一、项目介绍
+目前我们有很多分库分表的全量和增量轮询服务，但写法各异。
+缺点：
+1. 比如64个库，每个库有63张表。目前的实现方式都是在zk上配置好哪台机器执行哪个分库分组。一旦task的机器变更，需要重新再zk上配置，不够灵活
+2. 每个check都需要写自己的调度方式，重复工作量
+实现方案：
+实现basejob，提供query，process接口。
+优点：
+1. 只需关心查询和处理的业务，而不需要关心任务的调度。
+2. 采用抢锁的方式，比如64*63个锁，谁抢到谁执行，不用关心机器多少，也不用zk配置。
+3. 统一的执行日志和进度，实时查询运行状态。
+二、总体设计
+
+
+三、整体领域模型
+
+四、任务状态机
+
+五、数据库设计
+1 调度任务元数据
+
+schedule_task
+CREATE TABLE `schedule_task` (
+`id` bigint(20) unsigned NOT NULL AUTO_INCREMENT COMMENT '主键',
+`task_name` varchar(127) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '任务名称',
+`task_type` int(10) UNSIGNED NOT NULL COMMENT '任务类型，0:全量，1:增量',
+`version` int(10) UNSIGNED NOT NULL COMMENT '版本号，用于定义任务抢锁',
+`total_version` int(10) UNSIGNED NOT NULL COMMENT '版本号，用于定义分库分表抢锁',
+`status` int(10) UNSIGNED NOT NULL COMMENT '状态',
+`start_time` bigint(20) UNSIGNED NOT NULL COMMENT '轮询的开始时间',
+`end_time` bigint(20) UNSIGNED NOT NULL COMMENT '轮询的结束时间',
+`page_size` int(10) UNSIGNED NOT NULL COMMENT '轮询的pageSize',
+`thread_count` int(10) UNSIGNED NOT NULL COMMENT '轮询的线程数',
+`batch_size` int(10) UNSIGNED NOT NULL COMMENT '每个线程每轮处理的数量',
+`created_at` bigint(20) UNSIGNED NOT NULL COMMENT '创建时间',
+`updated_at` bigint(20) UNSIGNED NOT NULL COMMENT '更新时间',
+`is_deleted` tinyint(3) UNSIGNED NOT NULL DEFAULT 0 COMMENT '是否已删除',
+`gmt_modified` timestamp(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3) COMMENT '系统修改建',
+PRIMARY KEY (`id`),
+KEY `idx_schedule_task_name_version_status` (`task_name`, `version`, `status`),
+KEY `idx_schedule_task_created_at` (`created_at`),
+KEY `idx_schedule_task_updated_at` (`updated_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='任务调度任务元数据'
+
+2 task子任务处理单元
+
+schedule_task_item
+CREATE TABLE `schedule_task_item` (
+`id` bigint(20) unsigned NOT NULL AUTO_INCREMENT COMMENT '主键',
+`task_id` bigint(20) UNSIGNED NOT NULL COMMENT '归属任务ID',
+`version` int(10) UNSIGNED NOT NULL COMMENT '版本号，用于定义任务抢锁',
+`db_name` varchar(127) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '任务访问的DB',
+`db_table` varchar(127) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '任务访问的表',
+`status` int(10) UNSIGNED NOT NULL COMMENT '状态',
+`ip` varchar(127) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '处理任务的IP',
+`elapsed_time` int(10) UNSIGNED NOT NULL COMMENT '已用时长(s)',
+`process_count` bigint(20) UNSIGNED NOT NULL COMMENT '已处理的记录数',
+`origin_start` bigint(20) UNSIGNED NOT NULL COMMENT '轮询的原始起始ID',
+`origin_start_time` bigint(20) UNSIGNED NOT NULL COMMENT '轮询的原始起始时间',
+`start` bigint(20) UNSIGNED NOT NULL COMMENT '轮询的当前ID',
+`start_time` bigint(20) UNSIGNED NOT NULL COMMENT '轮询的当前时间',
+`end_time` bigint(20) UNSIGNED NOT NULL COMMENT '轮询的结束时间',
+`page_size` int(10) UNSIGNED NOT NULL COMMENT '轮询的pageSize',
+`created_at` bigint(20) UNSIGNED NOT NULL COMMENT '创建时间',
+`updated_at` bigint(20) UNSIGNED NOT NULL COMMENT '更新时间',
+`is_deleted` tinyint(3) UNSIGNED NOT NULL DEFAULT 0 COMMENT '是否已删除',
+`gmt_modified` timestamp(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3) COMMENT '系统修改建',
+PRIMARY KEY (`id`),
+KEY `idx_schedule_task_item_task_id_version_status` (`task_id`, `version`, `status`),
+KEY `idx_schedule_task_item_created_at` (`created_at`),
+KEY `idx_schedule_task_item_updated_at` (`updated_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='任务调度任务子任务'
+
+六、关键类代码实现
